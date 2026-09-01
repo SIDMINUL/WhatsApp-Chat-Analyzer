@@ -10,39 +10,41 @@ extract = URLExtract()
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".3gp", ".webm"}
-AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".ogg", ".wav", ".opus", ".amr"}
 DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".zip"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | DOCUMENT_EXTENSIONS
 
 
 def media_type(extension):
     extension = extension.lower()
-    if extension in IMAGE_EXTENSIONS:
-        return "Images"
-    if extension in VIDEO_EXTENSIONS:
-        return "Videos"
-    if extension in AUDIO_EXTENSIONS:
-        return "Audio"
-    if extension in DOCUMENT_EXTENSIONS:
-        return "Documents"
+    if extension in IMAGE_EXTENSIONS: return "Images"
+    if extension in VIDEO_EXTENSIONS: return "Videos"
+    if extension in AUDIO_EXTENSIONS: return "Audio"
+    if extension in DOCUMENT_EXTENSIONS: return "Documents"
     return "Other"
 
 
 def media_statistics(media_files):
     counts = Counter(media_type(m["extension"]) for m in media_files)
-    return {
-        "total": len(media_files),
-        "images": counts["Images"],
-        "videos": counts["Videos"],
-        "audio": counts["Audio"],
-        "by_type": dict(counts),
-    }
+    return {"total": len(media_files), "images": counts["Images"], "videos": counts["Videos"], "audio": counts["Audio"], "documents": counts["Documents"], "by_type": dict(counts)}
+
+
+def match_media_to_chat(media_files, df):
+    """Match exported media filenames to messages when the filename is present in chat text.
+    For '<Media omitted>' exports, retain the media file as unmatched rather than falsely
+    assigning it to an arbitrary message."""
+    rows = []
+    messages = df.reset_index(drop=True)
+    for media in media_files:
+        filename = media["filename"]
+        matches = messages[messages["message"].str.contains(filename, case=False, regex=False, na=False)]
+        row = matches.iloc[0] if not matches.empty else None
+        rows.append({**media, "date": row["date"] if row is not None else pd.NaT, "user": row["user"] if row is not None else "Unknown", "message": row["message"] if row is not None else ""})
+    return rows
 
 
 def fetch_stats(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
-
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     num_messages = df.shape[0]
     words_count = sum(len(message.split()) for message in df["message"].astype(str))
     num_media_messages = df["message"].str.strip().str.lower().isin({"<media omitted>", "image omitted", "video omitted", "audio omitted"}).sum()
@@ -51,74 +53,58 @@ def fetch_stats(selected_user, df):
 
 
 def most_busy_users(df):
-    x = df["user"].value_counts().head()
-    new_df = round((df["user"].value_counts() / df.shape[0]) * 100, 2).reset_index()
+    filtered = df[df["user"] != "group_notification"]
+    x = filtered["user"].value_counts().head()
+    new_df = round((filtered["user"].value_counts() / max(1, filtered.shape[0])) * 100, 2).reset_index()
     new_df.columns = ["name", "percent"]
     return x, new_df
 
 
 def create_wordcloud(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
-    temp = df[df["message"].notna() & (df["message"].str.strip() != "")]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
+    temp = df[df["message"].notna() & (df["message"].str.strip() != "") & ~df["message"].str.lower().str.contains("media omitted", na=False)]
     text = temp["message"].str.cat(sep=" ")
-    if not text.strip():
-        return None
+    if not text.strip(): return None
     return WordCloud(width=500, height=500, min_font_size=10, background_color="white").generate(text)
 
 
 def most_common_words(selected_user, df):
-    try:
-        stop_words = Path("stop_hinglish.txt").read_text(encoding="utf-8").split()
-    except FileNotFoundError:
-        stop_words = []
-
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
-    temp = df[(df["user"] != "group_notification") & (df["message"].str.strip() != "<Media omitted>")]
-    words = []
-    stop_set = set(stop_words)
-    for message in temp["message"].astype(str):
-        words.extend(word for word in message.lower().split() if word not in stop_set)
+    try: stop_set = set(Path("stop_hinglish.txt").read_text(encoding="utf-8").split())
+    except FileNotFoundError: stop_set = set()
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
+    temp = df[(df["user"] != "group_notification") & ~df["message"].str.lower().str.contains("media omitted", na=False)]
+    words = [word for message in temp["message"].astype(str) for word in message.lower().split() if word not in stop_set]
     return pd.DataFrame(Counter(words).most_common(20))
 
 
 def emoji_helper(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     emojis = [c for message in df["message"].astype(str) for c in message if c in emoji.EMOJI_DATA]
-    if not emojis:
-        return pd.DataFrame()
-    return pd.DataFrame(Counter(emojis).most_common())
+    return pd.DataFrame(Counter(emojis).most_common()) if emojis else pd.DataFrame()
 
 
 def monthly_timeline(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
-    timeline = df.groupby(["year", "month_num", "month"])["message"].count().reset_index()
-    timeline["time"] = timeline.apply(lambda r: f"{r['month']}-{r['year']}", axis=1)
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
+    timeline = df.groupby(["year", "month_num", "month"])["message"].count().reset_index().sort_values(["year", "month_num"])
+    timeline["time"] = timeline["month"] + "-" + timeline["year"].astype(str)
     return timeline
 
 
 def daily_timeline(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     return df.groupby("only_date")["message"].count().reset_index()
 
 
 def week_activity_map(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     return df["day_name"].value_counts()
 
 
 def month_activity_map(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     return df["month"].value_counts()
 
 
 def activity_heatmap(selected_user, df):
-    if selected_user != "Overall":
-        df = df[df["user"] == selected_user]
+    if selected_user != "Overall": df = df[df["user"] == selected_user]
     return df.pivot_table(index="day_name", columns="period", values="message", aggfunc="count").fillna(0)
