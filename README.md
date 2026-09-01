@@ -44,5 +44,5 @@ A **Streamlit-based data analysis app** that extracts insights from exported Wha
 ### 1️⃣ Clone the repository
 
 ```bash
-git clone https://github.com/your-username/whatsapp-chat-analyzer.git
+git clone https://github.com/SIDMINUL/whatsapp-chat-analyzer.git
 cd whatsapp-chat-analyzer
