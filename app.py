@@ -43,7 +43,7 @@ def read_upload(upload):
             suffix = Path(info.filename).suffix.lower()
             if suffix in helper.MEDIA_EXTENSIONS:
                 media_files.append({
-                    "name": Path(info.filename).name,
+                    "filename": Path(info.filename).name,
                     "path": info.filename,
                     "extension": suffix,
                     "data": z.read(info.filename),
@@ -66,6 +66,7 @@ if uploaded_file is None:
 try:
     data, media_files = read_upload(uploaded_file)
     df = preprocessor.preprocess(data)
+    media_files = helper.match_media_to_chat(media_files, df)
 except Exception as exc:
     st.error(f"Could not read this WhatsApp export: {exc}")
     st.stop()
@@ -113,24 +114,28 @@ if section == "Overview":
 
 elif section == "Media":
     st.header("📸 Media Center")
-    st.write("For actual files, use WhatsApp **Export chat → Include media** and upload the resulting ZIP.")
+    st.write("Upload a WhatsApp **ZIP exported with Include media** to inspect the actual files.")
 
     stats = helper.media_statistics(media_files)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Media Files", f"{stats['total']:,}")
     c2.metric("Images", f"{stats['images']:,}")
     c3.metric("Videos", f"{stats['videos']:,}")
     c4.metric("Audio", f"{stats['audio']:,}")
+    c5.metric("Documents", f"{stats['documents']:,}")
 
     if not media_files:
-        st.info("No media files found. A .txt export contains media placeholders, not the actual files.")
+        st.info("No actual media files found. A .txt export contains media placeholders, not the files themselves.")
     else:
         type_counts = pd.Series(stats["by_type"]).sort_values(ascending=False)
         st.subheader("📊 Media by Type")
         st.bar_chart(type_counts)
 
-        media_type = st.selectbox("Filter", ["All", "Images", "Videos", "Audio", "Documents", "Other"])
+        media_type = st.selectbox("Filter media", ["All", "Images", "Videos", "Audio", "Documents", "Other"])
         filtered = [m for m in media_files if media_type == "All" or helper.media_type(m["extension"]) == media_type]
+
+        matched_count = sum(m["user"] != "Unknown" for m in filtered)
+        st.caption(f"Metadata matched to chat messages: {matched_count:,} / {len(filtered):,}. Files shown as Unknown could not be linked because WhatsApp exported the message as a media placeholder.")
 
         images = [m for m in filtered if helper.media_type(m["extension"]) == "Images"]
         if images:
@@ -138,28 +143,43 @@ elif section == "Media":
             cols = st.columns(4)
             for i, media in enumerate(images[:100]):
                 with cols[i % 4]:
-                    try:
-                        st.image(media["data"], caption=media["name"], use_container_width=True)
-                    except Exception:
-                        st.caption(media["name"])
+                    st.image(media["data"], caption=media["filename"], use_container_width=True)
+                    if media["user"] != "Unknown":
+                        st.caption(f"👤 {media['user']} · {media['date'].strftime('%d %b %Y, %I:%M %p') if pd.notna(media['date']) else 'Unknown date'}")
+                    else:
+                        st.caption("👤 Sender/date not identifiable from export")
             if len(images) > 100:
                 st.info("Showing the first 100 images to keep the browser responsive.")
 
-        others = [m for m in filtered if helper.media_type(m["extension"]) != "Images"]
-        if others:
-            table = pd.DataFrame([
-                {"File": m["name"], "Type": helper.media_type(m["extension"]), "Size (KB)": round(m["size"] / 1024, 1)}
-                for m in others
-            ])
-            st.subheader("📁 Files")
-            st.dataframe(table, use_container_width=True, hide_index=True)
-
-            for media in others[:50]:
+        playable = [m for m in filtered if helper.media_type(m["extension"]) in {"Videos", "Audio"}]
+        if playable:
+            st.subheader("🎬 Audio & Video")
+            for media in playable[:50]:
                 kind = helper.media_type(media["extension"])
-                if kind == "Audio":
-                    st.audio(media["data"])
-                elif kind == "Videos":
-                    st.video(media["data"])
+                title = f"{media['filename']}"
+                if media["user"] != "Unknown":
+                    title += f" — shared by {media['user']}"
+                st.markdown(f"**{title}**")
+                if kind == "Audio": st.audio(media["data"])
+                else: st.video(media["data"])
+                if media["user"] != "Unknown":
+                    st.caption(f"{media['date'].strftime('%d %b %Y, %I:%M %p') if pd.notna(media['date']) else 'Unknown date'} · {media['message']}")
+
+        documents = [m for m in filtered if helper.media_type(m["extension"]) == "Documents"]
+        if documents:
+            st.subheader("📄 Documents")
+            table = pd.DataFrame([
+                {
+                    "File": m["filename"],
+                    "Type": helper.media_type(m["extension"]),
+                    "Size (KB)": round(m["size"] / 1024, 1),
+                    "Sender": m["user"],
+                    "Date": m["date"].strftime("%d %b %Y, %I:%M %p") if pd.notna(m["date"]) else "Unknown",
+                    "Message": m["message"],
+                }
+                for m in documents
+            ])
+            st.dataframe(table, use_container_width=True, hide_index=True)
 
 elif section == "Messages":
     st.header("💬 Message Analysis")
@@ -183,8 +203,7 @@ elif section == "Messages":
     emoji_df = helper.emoji_helper(selected_user, df)
     if not emoji_df.empty:
         c1, c2 = st.columns(2)
-        with c1:
-            st.dataframe(emoji_df, use_container_width=True, hide_index=True)
+        with c1: st.dataframe(emoji_df, use_container_width=True, hide_index=True)
         with c2:
             fig, ax = plt.subplots()
             ax.pie(emoji_df[1].head(10), labels=emoji_df[0].head(10), autopct="%0.1f%%")
