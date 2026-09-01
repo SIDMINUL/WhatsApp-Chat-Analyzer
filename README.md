@@ -8,7 +8,7 @@ Analyze messages, users, activity patterns, emojis, links, common words, and sha
 
 ## 🚀 Live Demo
 
-🔗 **Live App:** `YOUR_STREAMLIT_APP_URL`
+🔗 **Live App:** https://whatsapp-chat-analyzer-0808.streamlit.app/
 
 ---
 
